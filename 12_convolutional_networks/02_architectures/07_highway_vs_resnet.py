@@ -12,6 +12,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
+from matplotlib.widgets import Button, Slider, RadioButtons
+from pathlib import Path
+import argparse
 from sklearn.datasets import load_digits
 from sklearn.model_selection import train_test_split
 
@@ -129,20 +132,75 @@ def train_model(model, Xt, Xv, yt, yv, epochs=100, lr=0.005):
     return train_losses, val_accs
 
 
-def run_highway_vs_resnet_experiment(Xt, Xv, yt, yv):
+def build_checkpoint_path(checkpoint_dir, block_type, n_blocks, tag="main"):
+    suffix = f"{block_type}_{n_blocks}b"
+    if tag != "main":
+        suffix = f"{suffix}_{tag}"
+    return Path(checkpoint_dir) / f"07_highway_vs_resnet_{suffix}.pt"
+
+
+def save_checkpoint(path, model, train_losses=None, val_accs=None, extra=None):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "model_state_dict": model.state_dict(),
+        "train_losses": train_losses or [],
+        "val_accs": val_accs or [],
+        "extra": extra or {},
+    }
+    torch.save(payload, path)
+
+
+def load_checkpoint_if_exists(path, model):
+    if not path.exists():
+        return None
+    try:
+        payload = torch.load(path, map_location="cpu", weights_only=False)
+    except TypeError:
+        payload = torch.load(path, map_location="cpu")
+    model.load_state_dict(payload["model_state_dict"])
+    return payload
+
+
+def run_highway_vs_resnet_experiment(Xt, Xv, yt, yv, checkpoint_dir=".", load_pt=True, save_pt=True):
     """Highway és ResNet modellek összehasonlítása, valamint kapu-vizualizáció."""
     print("=" * 60)
     print("1. HIGHWAY NETWORK vs. RESNET")
     print("=" * 60)
 
     fig1, axes1 = plt.subplots(1, 3, figsize=(17, 5))
+    trained_models = {}
 
     for n_blocks in [3, 6]:
         for btype, color, ls in [('resnet', '#4CAF50', '-'), ('highway', '#E91E63', '--')]:
             torch.manual_seed(42)
             model = ConfigurableNet(n_blocks, btype)
+            ckpt_path = build_checkpoint_path(checkpoint_dir, btype, n_blocks)
+
+            payload = load_checkpoint_if_exists(ckpt_path, model) if load_pt else None
+            if payload is not None:
+                tl = payload.get("train_losses", [])
+                va = payload.get("val_accs", [])
+                if not va:
+                    model.eval()
+                    with torch.no_grad():
+                        va = [(model(Xv).argmax(1) == yv).float().mean().item()]
+                if not tl:
+                    tl = [np.nan] * len(va)
+                print(f"  {btype:8s} {n_blocks} blokk: checkpoint betöltve ({ckpt_path.name})")
+            else:
+                tl, va = train_model(model, Xt, Xv, yt, yv, epochs=50)
+                if save_pt:
+                    save_checkpoint(
+                        ckpt_path,
+                        model,
+                        tl,
+                        va,
+                        extra={"block_type": btype, "n_blocks": n_blocks, "epochs": 50},
+                    )
+                    print(f"  checkpoint mentve: {ckpt_path.name}")
+
+            trained_models[(btype, n_blocks)] = model
             n_params = sum(p.numel() for p in model.parameters())
-            tl, va = train_model(model, Xt, Xv, yt, yv, epochs=50)
             axes1[0].plot(tl, color=color, linestyle=ls, linewidth=1.5,
                           label=f"{btype} {n_blocks}b ({va[-1]*100:.0f}%)")
             axes1[1].plot(va, color=color, linestyle=ls, linewidth=1.5,
@@ -156,7 +214,21 @@ def run_highway_vs_resnet_experiment(Xt, Xv, yt, yv):
 
     torch.manual_seed(42)
     hw_model = ConfigurableNet(6, 'highway')
-    train_model(hw_model, Xt, Xv, yt, yv, epochs=80)
+    hw_ckpt = build_checkpoint_path(checkpoint_dir, "highway", 6, tag="gate80")
+    hw_payload = load_checkpoint_if_exists(hw_ckpt, hw_model) if load_pt else None
+    if hw_payload is None:
+        hw_tl, hw_va = train_model(hw_model, Xt, Xv, yt, yv, epochs=80)
+        if save_pt:
+            save_checkpoint(
+                hw_ckpt,
+                hw_model,
+                hw_tl,
+                hw_va,
+                extra={"block_type": "highway", "n_blocks": 6, "epochs": 80, "purpose": "gate_map"},
+            )
+            print(f"  checkpoint mentve: {hw_ckpt.name}")
+    else:
+        print(f"  highway gate checkpoint betöltve ({hw_ckpt.name})")
     hw_model.eval()
 
     with torch.no_grad():
@@ -174,6 +246,7 @@ def run_highway_vs_resnet_experiment(Xt, Xv, yt, yv):
     fig1.tight_layout()
     fig1.savefig("07_highway_vs_resnet.png", dpi=150)
     print("\nÁbra mentve: 07_highway_vs_resnet.png")
+    return trained_models
 
 
 def create_skip_summary_figure():
@@ -202,10 +275,152 @@ def create_skip_summary_figure():
     print("Ábra mentve: 07_skip_variansok.png")
 
 
+def load_or_train_for_gui(block_type, n_blocks, Xt, Xv, yt, yv, checkpoint_dir, load_pt, save_pt):
+    model = ConfigurableNet(n_blocks, block_type)
+    ckpt_path = build_checkpoint_path(checkpoint_dir, block_type, n_blocks)
+    payload = load_checkpoint_if_exists(ckpt_path, model) if load_pt else None
+    if payload is None:
+        tl, va = train_model(model, Xt, Xv, yt, yv, epochs=30)
+        if save_pt:
+            save_checkpoint(
+                ckpt_path,
+                model,
+                tl,
+                va,
+                extra={"block_type": block_type, "n_blocks": n_blocks, "epochs": 30, "purpose": "gui"},
+            )
+    return model
+
+
+def launch_gui(Xv, yv, models_by_depth, initial_depth=6):
+    """Interaktív GUI minták közti léptetéssel és két architektúra predikcióval."""
+    if not models_by_depth:
+        print("GUI nem indítható: egyik modell sem elérhető.")
+        return
+
+    fig = plt.figure(figsize=(10, 7))
+    gs = fig.add_gridspec(4, 2, height_ratios=[8, 1, 1, 1], width_ratios=[1, 1])
+    ax_img = fig.add_subplot(gs[0, 0])
+    ax_text = fig.add_subplot(gs[0, 1])
+    ax_slider = fig.add_subplot(gs[1, :])
+    ax_depth = fig.add_subplot(gs[2, 0])
+    ax_hint = fig.add_subplot(gs[2, 1])
+    ax_prev = fig.add_subplot(gs[3, 0])
+    ax_next = fig.add_subplot(gs[3, 1])
+
+    slider = Slider(ax_slider, "Minta index", 0, len(Xv) - 1, valinit=0, valstep=1)
+    depth_selector = RadioButtons(ax_depth, ["3", "6"], active=1 if int(initial_depth) == 6 else 0)
+    btn_prev = Button(ax_prev, "Előző")
+    btn_next = Button(ax_next, "Következő")
+
+    ax_text.axis("off")
+    ax_hint.axis("off")
+    ax_hint.text(0.0, 0.45, "Depth selector: 3b / 6b", fontsize=10)
+    txt = ax_text.text(0.0, 0.98, "", va="top", fontsize=11, family="monospace")
+
+    for depth_models in models_by_depth.values():
+        for model in depth_models.values():
+            if model is not None:
+                model.eval()
+
+    state = {"depth": int(initial_depth) if int(initial_depth) in models_by_depth else sorted(models_by_depth.keys())[0]}
+
+    def predict_line(name, model, x):
+        if model is None:
+            return f"{name}: N/A"
+        with torch.no_grad():
+            probs = F.softmax(model(x), dim=1)[0]
+            pred = int(torch.argmax(probs).item())
+            conf = float(probs[pred].item())
+        return f"{name}: pred={pred}  conf={conf*100:5.1f}%"
+
+    def update(idx):
+        i = int(idx)
+        depth = state["depth"]
+        depth_models = models_by_depth.get(depth, {})
+        resnet_model = depth_models.get("resnet")
+        highway_model = depth_models.get("highway")
+        x = Xv[i:i + 1]
+        img = Xv[i, 0].detach().numpy()
+        true_label = int(yv[i].item())
+
+        ax_img.clear()
+        ax_img.imshow(img, cmap="gray_r", vmin=0, vmax=1)
+        ax_img.set_title(f"Digits minta #{i} (true={true_label})", fontweight="bold")
+        ax_img.axis("off")
+
+        lines = [
+            f"True label: {true_label} (depth={depth}b)",
+            "",
+            predict_line(f"ResNet {depth}b ", resnet_model, x),
+            predict_line(f"Highway {depth}b", highway_model, x),
+        ]
+        txt.set_text("\n".join(lines))
+        fig.canvas.draw_idle()
+
+    def set_depth(label):
+        state["depth"] = int(label)
+        update(slider.val)
+
+    def go_prev(_):
+        slider.set_val(max(0, int(slider.val) - 1))
+
+    def go_next(_):
+        slider.set_val(min(len(Xv) - 1, int(slider.val) + 1))
+
+    slider.on_changed(update)
+    depth_selector.on_clicked(set_depth)
+    btn_prev.on_clicked(go_prev)
+    btn_next.on_clicked(go_next)
+    update(0)
+    fig.suptitle("Highway vs ResNet teszt GUI", fontsize=14, fontweight="bold")
+    plt.tight_layout()
+    plt.show()
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Highway vs ResNet kísérlet checkpoint és GUI támogatással")
+    parser.add_argument("--checkpoint-dir", default=".", help="Checkpoint könyvtár (.pt fájlok)")
+    parser.add_argument("--no-load-pt", action="store_true", help="Ne töltsön be meglévő checkpointot")
+    parser.add_argument("--no-save-pt", action="store_true", help="Ne mentsen checkpointot")
+    parser.add_argument("--gui", action="store_true", help="GUI indítása a két architektúra teszteléséhez")
+    parser.add_argument("--gui-only", action="store_true", help="Csak GUI (fő kísérlet és ábrák kihagyása)")
+    parser.add_argument("--gui-depth", type=int, default=6, choices=[3, 6], help="Kezdő mélység a GUI-ban (3 vagy 6)")
+    return parser.parse_args()
+
+
 def main():
+    args = parse_args()
+    load_pt = not args.no_load_pt
+    save_pt = not args.no_save_pt
+
     Xt, Xv, yt, yv = load_data()
-    run_highway_vs_resnet_experiment(Xt, Xv, yt, yv)
-    create_skip_summary_figure()
+
+    trained_models = {}
+    if not args.gui_only:
+        trained_models = run_highway_vs_resnet_experiment(
+            Xt,
+            Xv,
+            yt,
+            yv,
+            checkpoint_dir=args.checkpoint_dir,
+            load_pt=load_pt,
+            save_pt=save_pt,
+        )
+        create_skip_summary_figure()
+
+    if args.gui:
+        gui_models = {3: {}, 6: {}}
+        for depth in [3, 6]:
+            for btype in ["resnet", "highway"]:
+                model = trained_models.get((btype, depth))
+                if model is None:
+                    model = load_or_train_for_gui(
+                        btype, depth, Xt, Xv, yt, yv, args.checkpoint_dir, load_pt, save_pt
+                    )
+                gui_models[depth][btype] = model
+        launch_gui(Xv, yv, gui_models, initial_depth=args.gui_depth)
+
     plt.close("all")
     print("\nKész!")
 
