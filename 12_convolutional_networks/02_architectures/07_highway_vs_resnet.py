@@ -16,13 +16,6 @@ from sklearn.datasets import load_digits
 from sklearn.model_selection import train_test_split
 
 
-# ── Adat ──
-digits = load_digits()
-X = torch.tensor(digits.data.astype(np.float32).reshape(-1, 1, 8, 8) / 16.0)
-y = torch.tensor(digits.target, dtype=torch.long)
-Xt, Xv, yt, yv = [torch.tensor(np.array(a)) for a in train_test_split(X, y, test_size=0.2, random_state=42, stratify=y.numpy())]
-
-
 # ══════════════════════════════════════════════════════════════
 # BLOKKOK
 # ══════════════════════════════════════════════════════════════
@@ -107,7 +100,19 @@ class ConfigurableNet(nn.Module):
         return gates
 
 
-def train_model(model, epochs=100, lr=0.005):
+def load_data(test_size=0.2, random_state=42):
+    """Digits adathalmaz betöltése és train/validation split."""
+    digits = load_digits()
+    X = torch.tensor(digits.data.astype(np.float32).reshape(-1, 1, 8, 8) / 16.0)
+    y = torch.tensor(digits.target, dtype=torch.long)
+    Xt, Xv, yt, yv = [
+        torch.tensor(np.array(a))
+        for a in train_test_split(X, y, test_size=test_size, random_state=random_state, stratify=y.numpy())
+    ]
+    return Xt, Xv, yt, yv
+
+
+def train_model(model, Xt, Xv, yt, yv, epochs=100, lr=0.005):
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     criterion = nn.CrossEntropyLoss()
     train_losses, val_accs = [], []
@@ -124,81 +129,87 @@ def train_model(model, epochs=100, lr=0.005):
     return train_losses, val_accs
 
 
-# ══════════════════════════════════════════════════════════════
-# 1. KÍSÉRLET: Highway vs. ResNet
-# ══════════════════════════════════════════════════════════════
+def run_highway_vs_resnet_experiment(Xt, Xv, yt, yv):
+    """Highway és ResNet modellek összehasonlítása, valamint kapu-vizualizáció."""
+    print("=" * 60)
+    print("1. HIGHWAY NETWORK vs. RESNET")
+    print("=" * 60)
 
-print("=" * 60)
-print("1. HIGHWAY NETWORK vs. RESNET")
-print("=" * 60)
+    fig1, axes1 = plt.subplots(1, 3, figsize=(17, 5))
 
-fig1, axes1 = plt.subplots(1, 3, figsize=(17, 5))
+    for n_blocks in [3, 6]:
+        for btype, color, ls in [('resnet', '#4CAF50', '-'), ('highway', '#E91E63', '--')]:
+            torch.manual_seed(42)
+            model = ConfigurableNet(n_blocks, btype)
+            n_params = sum(p.numel() for p in model.parameters())
+            tl, va = train_model(model, Xt, Xv, yt, yv, epochs=50)
+            axes1[0].plot(tl, color=color, linestyle=ls, linewidth=1.5,
+                          label=f"{btype} {n_blocks}b ({va[-1]*100:.0f}%)")
+            axes1[1].plot(va, color=color, linestyle=ls, linewidth=1.5,
+                          label=f"{btype} {n_blocks}b ({n_params}p)")
+            print(f"  {btype:8s} {n_blocks} blokk: acc={va[-1]*100:.1f}%, params={n_params}")
 
-for n_blocks in [3, 6]:
-    for btype, color, ls in [('resnet', '#4CAF50', '-'), ('highway', '#E91E63', '--')]:
-        torch.manual_seed(42)
-        model = ConfigurableNet(n_blocks, btype)
-        n_params = sum(p.numel() for p in model.parameters())
-        tl, va = train_model(model, epochs=50)
-        axes1[0].plot(tl, color=color, linestyle=ls, linewidth=1.5,
-                      label=f"{btype} {n_blocks}b ({va[-1]*100:.0f}%)")
-        axes1[1].plot(va, color=color, linestyle=ls, linewidth=1.5,
-                      label=f"{btype} {n_blocks}b ({n_params}p)")
-        print(f"  {btype:8s} {n_blocks} blokk: acc={va[-1]*100:.1f}%, params={n_params}")
+    axes1[0].set_title("Tanítási veszteség", fontweight="bold")
+    axes1[0].set_xlabel("Epoch"); axes1[0].legend(fontsize=8); axes1[0].grid(True, alpha=0.3)
+    axes1[1].set_title("Validációs pontosság", fontweight="bold")
+    axes1[1].set_xlabel("Epoch"); axes1[1].legend(fontsize=8); axes1[1].grid(True, alpha=0.3)
 
-axes1[0].set_title("Tanítási veszteség", fontweight="bold")
-axes1[0].set_xlabel("Epoch"); axes1[0].legend(fontsize=8); axes1[0].grid(True, alpha=0.3)
-axes1[1].set_title("Validációs pontosság", fontweight="bold")
-axes1[1].set_xlabel("Epoch"); axes1[1].legend(fontsize=8); axes1[1].grid(True, alpha=0.3)
+    torch.manual_seed(42)
+    hw_model = ConfigurableNet(6, 'highway')
+    train_model(hw_model, Xt, Xv, yt, yv, epochs=80)
+    hw_model.eval()
 
-# 2. Kapu-értékek vizualizáció
-torch.manual_seed(42)
-hw_model = ConfigurableNet(6, 'highway')
-train_model(hw_model, epochs=80)
-hw_model.eval()
+    with torch.no_grad():
+        gates = hw_model.get_gate_map(Xv[:1])
 
-with torch.no_grad():
-    gates = hw_model.get_gate_map(Xv[:1])
+    ax = axes1[2]
+    gate_matrix = np.array(gates)  # (n_blocks, channels)
+    im = ax.imshow(gate_matrix, cmap="RdYlGn", aspect="auto", vmin=0, vmax=1)
+    ax.set_xlabel("Csatorna"); ax.set_ylabel("Blokk (réteg)")
+    ax.set_title("Highway kapu-értékek T(x)\n(zöld=áteresztés, piros=identity)", fontweight="bold")
+    plt.colorbar(im, ax=ax, fraction=0.046)
 
-ax = axes1[2]
-gate_matrix = np.array(gates)  # (n_blocks, channels)
-im = ax.imshow(gate_matrix, cmap="RdYlGn", aspect="auto", vmin=0, vmax=1)
-ax.set_xlabel("Csatorna"); ax.set_ylabel("Blokk (réteg)")
-ax.set_title("Highway kapu-értékek T(x)\n(zöld=áteresztés, piros=identity)", fontweight="bold")
-plt.colorbar(im, ax=ax, fraction=0.046)
+    fig1.suptitle("Highway Network vs. ResNet: tanulható kapu vs. fix identity skip",
+                  fontsize=14, fontweight="bold")
+    fig1.tight_layout()
+    fig1.savefig("07_highway_vs_resnet.png", dpi=150)
+    print("\nÁbra mentve: 07_highway_vs_resnet.png")
 
-fig1.suptitle("Highway Network vs. ResNet: tanulható kapu vs. fix identity skip",
-              fontsize=14, fontweight="bold")
-fig1.tight_layout()
-fig1.savefig("07_highway_vs_resnet.png", dpi=150)
-print("\nÁbra mentve: 07_highway_vs_resnet.png")
 
-# ══════════════════════════════════════════════════════════════
-# 2. ÖSSZEFOGLALÓ: SKIP-VARIÁNSOK
-# ══════════════════════════════════════════════════════════════
+def create_skip_summary_figure():
+    """Összefoglaló táblázat különböző skip connection variánsokról."""
+    fig2, ax2 = plt.subplots(figsize=(12, 5))
+    ax2.axis("off")
+    data = [
+        ["", "Highway Network", "ResNet", "DenseNet"],
+        ["Év", "2015 (Srivastava,\nSchmidhuber)", "2015 (He et al.)", "2017 (Huang et al.)"],
+        ["Skip típus", "y = T·H(x) + (1-T)·x\nTANULHATÓ kapu", "y = F(x) + x\nFIX identity", "y = [x, F1(x), F2(x),...]\nKONKATENÁCIÓ"],
+        ["Extra param.", "Igen (kapu hálózat)", "Nincs", "Nincs (de nő a\ncsatornaszám)"],
+        ["Gradiens", "T(x) szabályozza", "Mindig 1 (direkt út)", "Minden rétegből\ndirekt út"],
+        ["Erősség", "Adaptív: a háló\ndönti el mi fontos", "Egyszerű, stabil,\njól skálázódik", "Feature reuse,\nkevés paraméter"],
+    ]
+    table = ax2.table(cellText=data, loc="center", cellLoc="center")
+    table.auto_set_font_size(False); table.set_fontsize(9); table.scale(1.0, 2.4)
+    for j in range(4):
+        table[0, j].set_facecolor("#37474F")
+        table[0, j].set_text_props(color="white", fontweight="bold")
+    for i in range(1, len(data)):
+        table[i, 0].set_facecolor("#ECEFF1")
+        table[i, 0].set_text_props(fontweight="bold")
+    ax2.set_title("Skip connection variánsok összehasonlítása", fontsize=14, fontweight="bold", pad=20)
+    fig2.tight_layout()
+    fig2.savefig("07_skip_variansok.png", dpi=150)
+    print("Ábra mentve: 07_skip_variansok.png")
 
-fig2, ax2 = plt.subplots(figsize=(12, 5))
-ax2.axis("off")
-data = [
-    ["", "Highway Network", "ResNet", "DenseNet"],
-    ["Év", "2015 (Srivastava,\nSchmidhuber)", "2015 (He et al.)", "2017 (Huang et al.)"],
-    ["Skip típus", "y = T·H(x) + (1-T)·x\nTANULHATÓ kapu", "y = F(x) + x\nFIX identity", "y = [x, F1(x), F2(x),...]\nKONKATENÁCIÓ"],
-    ["Extra param.", "Igen (kapu hálózat)", "Nincs", "Nincs (de nő a\ncsatornaszám)"],
-    ["Gradiens", "T(x) szabályozza", "Mindig 1 (direkt út)", "Minden rétegből\ndirekt út"],
-    ["Erősség", "Adaptív: a háló\ndönti el mi fontos", "Egyszerű, stabil,\njól skálázódik", "Feature reuse,\nkevés paraméter"],
-]
-table = ax2.table(cellText=data, loc="center", cellLoc="center")
-table.auto_set_font_size(False); table.set_fontsize(9); table.scale(1.0, 2.4)
-for j in range(4):
-    table[0, j].set_facecolor("#37474F")
-    table[0, j].set_text_props(color="white", fontweight="bold")
-for i in range(1, len(data)):
-    table[i, 0].set_facecolor("#ECEFF1")
-    table[i, 0].set_text_props(fontweight="bold")
-ax2.set_title("Skip connection variánsok összehasonlítása", fontsize=14, fontweight="bold", pad=20)
-fig2.tight_layout()
-fig2.savefig("07_skip_variansok.png", dpi=150)
-print("Ábra mentve: 07_skip_variansok.png")
 
-plt.close("all")
-print("\nKész!")
+def main():
+    Xt, Xv, yt, yv = load_data()
+    run_highway_vs_resnet_experiment(Xt, Xv, yt, yv)
+    create_skip_summary_figure()
+    plt.close("all")
+    print("\nKész!")
+
+
+if __name__ == '__main__':
+    main()
+
