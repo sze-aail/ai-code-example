@@ -33,7 +33,7 @@ def main():
         slider.valtext.set_alpha(alpha)
         slider.label.set_alpha(alpha)
         slider.poly.set_alpha(alpha)
-        slider.hline.set_alpha(alpha)
+        slider.vline.set_alpha(alpha)
 
     def update(val=None):
         mode = radio.value_selected
