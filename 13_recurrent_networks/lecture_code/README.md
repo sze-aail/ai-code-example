@@ -33,3 +33,10 @@ Az alabbi parok keszultek el:
 - A `09` es `10` script internetet igenyelhet modellletolteshez.
 - Ha optional csomag hianyzik, a script jelzi es kulturaltan kilep.
 
+## Tovabbi metrikak
+
+Lec13 generativ/NLP/LLM metrika receptek kulon mappaban:
+
+- `13_recurrent_networks/11_metrics/README.md`
+- `13_recurrent_networks/11_metrics/smoke_test_metrics.py`
+

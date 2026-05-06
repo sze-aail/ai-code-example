@@ -5,6 +5,7 @@ A mappa szerkezete koveti a korabbi moduloket:
 
 - `lecture_code/` - futtathato, oktatasi peldak
 - `exercises/` - feladat-otletek
+- `11_metrics/` - generativ + NLP + LLM metrika receptek
 
 ## Gyors inditas
 
@@ -27,6 +28,14 @@ Gyors, nem-blokkolo ellenorzeshez:
 
 ```bash
 python 13_recurrent_networks/lecture_code/smoke_test_recurrent_networks_interactive.py
+```
+
+## Lec13 metrikak (generativ + NLP)
+
+```bash
+python 13_recurrent_networks/11_metrics/smoke_test_metrics.py
+python 13_recurrent_networks/11_metrics/04_bleu_rouge_meteor_toy.py
+python 13_recurrent_networks/11_metrics/06_perplexity_toy.py
 ```
 
 ## Temak
