@@ -1,0 +1,27 @@
+[project]
+name = "ai-code-example"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "bert-score",
+    "clean-fid",
+    "evaluate",
+    "kaleido>=1.3.0",
+    "matplotlib",
+    "nltk",
+    "numpy>=2.4.4",
+    "open-clip-torch",
+    "opencv-python",
+    "plotly",
+    "rouge-score",
+    "sacrebleu",
+    "scikit-learn",
+    "seaborn",
+    "sentence-transformers",
+    "streamlit",
+    "torch",
+    "torchmetrics",
+    "torchvision",
+    "transformers",
+    "ultralytics",
+]

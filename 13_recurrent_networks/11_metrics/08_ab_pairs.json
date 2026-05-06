@@ -1,0 +1,12 @@
+{
+  "pairs": [
+    {
+      "a": "Model A: concise answer",
+      "b": "Model B: verbose answer"
+    },
+    {
+      "a": "Model A: factual answer",
+      "b": "Model B: creative answer"
+    }
+  ]
+}
